@@ -1,10 +1,11 @@
+mod utils;
+
 use clap::Parser;
 use dotenv::dotenv;
 use scc::HashSet;
-use std::sync::Arc;
+use std::sync::Mutex;
 use url::Url;
-
-mod scraper;
+use utils::types::DB;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -27,14 +28,12 @@ async fn main() {
         .with_thread_ids(true)
         .with_thread_names(true)
         .with_target(false)
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    let (tx, rx) = async_channel::unbounded::<Url>();
-
-    let db = Arc::new(HashSet::<Url>::new());
+    let db: DB;
 
     let args = Args::parse();
     match Url::parse(&args.url) {
@@ -42,7 +41,18 @@ async fn main() {
             tracing::info!("scraping URL: {}", url);
 
             // main url has to be sent to the channel, panic if it fails
-            tx.send(url).await.unwrap();
+            let (tx, rx) = async_channel::unbounded::<Url>();
+            db = DB {
+                host: url
+                    .host_str()
+                    .expect("URL is valid but the host is invalid!")
+                    .to_string(),
+                visited: HashSet::<Url>::new(),
+                urls: Mutex::new(Vec::<Url>::new()),
+                tx,
+                rx,
+            };
+            db.tx.try_send(url).unwrap();
         }
         Err(e) => {
             tracing::error!("failed to parse provided URL: {}", e);
@@ -66,34 +76,21 @@ async fn main() {
 
     tracing::info!("using {} threads", thread_count);
 
-    for id in 0..thread_count {
-        let rx = rx.clone();
-        let tx = tx.clone();
-        let db = db.clone();
+    let threads: Vec<_> = (0..thread_count)
+        .map(|thread_id| {
+            let db = db.clone();
+            tokio::spawn(async move {
+                utils::worker::scraper_thread(thread_id, &db).await;
+            })
+        })
+        .collect();
 
-        tokio::spawn(async move {
-            loop {
-                let url = match rx.recv().await {
-                    Ok(url) => url,
-                    Err(_) => {
-                        tracing::info!("channel closed, exiting");
-                        return;
-                    }
-                };
-
-                match scraper::scrape_url(id, url, tx.clone(), db.clone()).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("scrape failed: {}", e)
-                    }
-                }
-            }
-        });
+    for t in threads {
+        t.await.unwrap();
     }
+    tracing::info!("all threads have exited");
 
-    for _ in 0..100 {
-        tx.send(Url::parse("https://www.google.com").unwrap())
-            .await
-            .unwrap();
-    }
+    db.urls.lock().unwrap().iter().for_each(|url| {
+        tracing::error!("{url}");
+    });
 }

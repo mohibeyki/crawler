@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+reqwest = { version = "0.12.5", features = [
+  "gzip",
+  "brotli",
+  "zstd",
+  "deflate",
+  "json",
+] }
 async-channel = "2.3.1"
 clap = { version = "4.5.13", features = ["derive"] }
 dotenv = "0.15.0"
@@ -12,3 +19,4 @@ tokio = { version = "1.39.2", features = ["full"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 url = "2.5.2"
+scraper = "0.20.0"
