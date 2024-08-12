@@ -1,24 +1,19 @@
-use scc::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use url::Url;
 
-pub struct DB {
+#[derive(Serialize, Deserialize)]
+pub struct UrlData {
+    pub url: Url,
+    pub status: u16,
+}
+
+pub struct Database {
     pub host: String,
-    pub visited: HashSet<Url>,
-    pub urls: Mutex<Vec<Url>>,
+    pub visited: Mutex<HashSet<Url>>,
+    pub urls: Mutex<Vec<UrlData>>,
     pub tx: async_channel::Sender<Url>,
     pub rx: async_channel::Receiver<Url>,
+    pub worker_count: Mutex<usize>,
 }
-
-impl Clone for DB {
-    fn clone(&self) -> Self {
-        DB {
-            host: self.host.clone(),
-            visited: self.visited.clone(),
-            urls: Mutex::new(self.urls.lock().unwrap().clone()),
-            tx: self.tx.clone(),
-            rx: self.rx.clone(),
-        }
-    }
-}
-
