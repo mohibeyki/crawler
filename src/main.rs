@@ -38,6 +38,9 @@ async fn main() {
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
+    // create a channel to send output to be written
+    let (output_tx, output_rx) = async_channel::unbounded::<UrlData>();
+
     let args = Args::parse();
     let db = Arc::new(match Url::parse(&args.url) {
         Ok(url) => {
@@ -53,7 +56,7 @@ async fn main() {
                     .expect("URL is valid but the host is invalid! (should not happen!)")
                     .to_string(),
                 visited: Mutex::new(HashSet::<Url>::new()),
-                urls: Mutex::new(Vec::<UrlData>::new()),
+                urls_tx: output_tx.clone(),
                 tx,
                 rx,
                 worker_count: Mutex::new(0),
@@ -96,16 +99,18 @@ async fn main() {
         })
         .collect();
 
+    let writer = BufWriter::new(output_file);
+    let writer_thread = tokio::spawn(async move {
+        utils::worker::output_thread(output_rx, writer).await;
+    });
+
     for t in threads {
         t.await.unwrap();
     }
 
-    tracing::info!(
-        "all threads have exited, total URLs scraped: {}",
-        db.urls.lock().unwrap().len()
-    );
+    output_tx.close();
 
-    let mut writer = BufWriter::new(output_file);
-    let urls = db.urls.lock().unwrap();
-    serde_json::to_writer_pretty(&mut writer, &*urls).expect("failed to write output file");
+    writer_thread.await.expect("failed to join writer thread");
+
+    tracing::info!("all threads have exited",);
 }

@@ -1,8 +1,52 @@
 use scraper::{Html, Selector};
+use std::fs::File;
+use std::io::BufWriter;
 use std::sync::Arc;
 use url::Url;
 
+use struson::writer::{JsonStreamWriter, JsonWriter, WriterSettings};
+
 use super::types::{Database, UrlData};
+
+pub async fn output_thread(
+    output_rx: async_channel::Receiver<UrlData>,
+    mut writer: BufWriter<File>,
+) {
+    let mut stream_writer = JsonStreamWriter::new_custom(
+        &mut writer,
+        WriterSettings {
+            pretty_print: true,
+            ..Default::default()
+        },
+    );
+
+    if let Err(err) = stream_writer.begin_array() {
+        tracing::error!("failed to begin output's json array: {}", err);
+        return;
+    }
+
+    loop {
+        match output_rx.recv().await {
+            Ok(url_data) => {
+                if let Err(err) = stream_writer.serialize_value(&url_data) {
+                    tracing::error!("failed to serialize URL data: {}", err);
+                }
+            }
+            Err(_) => {
+                tracing::info!("could not receive from output channel, closing file");
+                break;
+            }
+        }
+    }
+
+    if let Err(err) = stream_writer.end_array() {
+        tracing::error!("failed to end array: {}", err);
+    }
+
+    if let Err(err) = stream_writer.finish_document() {
+        tracing::error!("failed to finish document: {}", err);
+    }
+}
 
 async fn extract_urls(
     base_url: Url,
@@ -47,13 +91,19 @@ async fn scrape_url(
     match client.get(url.clone()).send().await {
         Ok(res) => {
             // add to list of urls
-            {
-                let mut urls = db.urls.lock().unwrap();
-                urls.push(UrlData {
+            match db
+                .urls_tx
+                .send(UrlData {
                     url: url.clone(),
                     status: res.status().as_u16(),
-                });
-            }
+                })
+                .await
+            {
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::error!("failed to send URL data to output channel: {}", err);
+                }
+            };
 
             // if the request fails, don't scrape
             if res.status().is_client_error() || res.status().is_server_error() {
